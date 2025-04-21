@@ -50,10 +50,10 @@ typedef Matrix3f M3F;
 #define MF(a,b)  Matrix<float, (a), (b)>
 #define VF(a)    Matrix<float, (a), 1>
 
-M3D Eye3d(M3D::Identity());
-M3F Eye3f(M3F::Identity());
-V3D Zero3d(0, 0, 0);
-V3F Zero3f(0, 0, 0);
+extern M3D Eye3d;
+extern M3F Eye3f;
+extern V3D Zero3d;
+extern V3F Zero3f;
 
 struct MeasureGroup     // Lidar data and imu dates for the curent process
 {
@@ -83,90 +83,24 @@ struct Pose6DTemp
 
 struct StatesGroup
 {
-    StatesGroup() {
-		this->rot_end = M3D::Identity();
-		this->pos_end = Zero3d;
-        this->vel_end = Zero3d;
-        this->bias_g  = Zero3d;
-        this->bias_a  = Zero3d;
-        this->gravity = Zero3d;
-        this->cov     = MD(DIM_STATE,DIM_STATE)::Identity() * INIT_COV;
-        this->cov.block<9,9>(9,9) = MD(9,9)::Identity() * 0.00001;
-	};
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW 
 
-    StatesGroup(const StatesGroup& b) {
-		this->rot_end = b.rot_end;
-		this->pos_end = b.pos_end;
-        this->vel_end = b.vel_end;
-        this->bias_g  = b.bias_g;
-        this->bias_a  = b.bias_a;
-        this->gravity = b.gravity;
-        this->cov     = b.cov;
-	};
+    StatesGroup();
+    StatesGroup(const StatesGroup& other); 
+    StatesGroup& operator=(const StatesGroup& rhs);
 
-    StatesGroup& operator=(const StatesGroup& b)
-	{
-        this->rot_end = b.rot_end;
-		this->pos_end = b.pos_end;
-        this->vel_end = b.vel_end;
-        this->bias_g  = b.bias_g;
-        this->bias_a  = b.bias_a;
-        this->gravity = b.gravity;
-        this->cov     = b.cov;
-        return *this;
-	};
+    StatesGroup  operator+(const Matrix<double,DIM_STATE,1>& add) const;
+    StatesGroup& operator+=(const Matrix<double,DIM_STATE,1>& add);
+    Matrix<double,DIM_STATE,1>
+                 operator-(const StatesGroup& rhs) const;
 
-    StatesGroup operator+(const Matrix<double, DIM_STATE, 1> &state_add)
-	{
-        StatesGroup a;
-		a.rot_end = this->rot_end * Exp(state_add(0,0), state_add(1,0), state_add(2,0));
-		a.pos_end = this->pos_end + state_add.block<3,1>(3,0);
-        a.vel_end = this->vel_end + state_add.block<3,1>(6,0);
-        a.bias_g  = this->bias_g  + state_add.block<3,1>(9,0);
-        a.bias_a  = this->bias_a  + state_add.block<3,1>(12,0);
-        a.gravity = this->gravity + state_add.block<3,1>(15,0);
-        a.cov     = this->cov;
-		return a;
-	};
+    void resetpose();
 
-    StatesGroup& operator+=(const Matrix<double, DIM_STATE, 1> &state_add)
-	{
-        this->rot_end = this->rot_end * Exp(state_add(0,0), state_add(1,0), state_add(2,0));
-		this->pos_end += state_add.block<3,1>(3,0);
-        this->vel_end += state_add.block<3,1>(6,0);
-        this->bias_g  += state_add.block<3,1>(9,0);
-        this->bias_a  += state_add.block<3,1>(12,0);
-        this->gravity += state_add.block<3,1>(15,0);
-		return *this;
-	};
-
-    Matrix<double, DIM_STATE, 1> operator-(const StatesGroup& b)
-	{
-        Matrix<double, DIM_STATE, 1> a;
-        M3D rotd(b.rot_end.transpose() * this->rot_end);
-        a.block<3,1>(0,0)  = Log(rotd);
-        a.block<3,1>(3,0)  = this->pos_end - b.pos_end;
-        a.block<3,1>(6,0)  = this->vel_end - b.vel_end;
-        a.block<3,1>(9,0)  = this->bias_g  - b.bias_g;
-        a.block<3,1>(12,0) = this->bias_a  - b.bias_a;
-        a.block<3,1>(15,0) = this->gravity - b.gravity;
-		return a;
-	};
-
-    void resetpose()
-    {
-        this->rot_end = M3D::Identity();
-		this->pos_end = Zero3d;
-        this->vel_end = Zero3d;
-    }
-
-	M3D rot_end;      // the estimated attitude (rotation matrix) at the end lidar point
-    V3D pos_end;      // the estimated position at the end lidar point (world frame)
-    V3D vel_end;      // the estimated velocity at the end lidar point (world frame)
-    V3D bias_g;       // gyroscope bias
-    V3D bias_a;       // accelerator bias
-    V3D gravity;      // the estimated gravity acceleration
-    Matrix<double, DIM_STATE, DIM_STATE>  cov;     // states covariance
+    M3D   rot_end;
+    V3D   pos_end, vel_end;
+    V3D   bias_g, bias_a;
+    V3D   gravity;
+    Matrix<double,DIM_STATE,DIM_STATE> cov;
 };
 
 template<typename T>
@@ -233,12 +167,9 @@ bool esti_normvector(Matrix<T, 3, 1> &normvec, const PointVector &point, const T
     return true;
 }
 
-float calc_dist(PointType p1, PointType p2){
-    float d = (p1.x - p2.x) * (p1.x - p2.x) + (p1.y - p2.y) * (p1.y - p2.y) + (p1.z - p2.z) * (p1.z - p2.z);
-    return d;
-}
+float calc_dist(PointType p1, PointType p2);
 
-template<typename T> // 模板函数，编译器执行到这里时才会实例化，编译器会根据传入的参数类型自动生成对应的函数。
+template<typename T>
 bool esti_plane(Matrix<T, 4, 1> &pca_result, const PointVector &point, const T &threshold)
 {
     Matrix<T, NUM_MATCH_POINTS, 3> A;

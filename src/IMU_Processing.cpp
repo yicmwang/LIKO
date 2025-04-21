@@ -1,134 +1,64 @@
-#include <cmath>
-#include <math.h>
-#include <deque>
-#include <mutex>
-#include <thread>
-#include <fstream>
-#include <csignal>
+#include "IMU_Processing.hpp"
+
 #include <ros/ros.h>
-#include <so3_math.h>
-#include <Eigen/Eigen>
-#include <common_lib.h>
 #include <pcl/common/io.h>
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-#include <condition_variable>
-#include <nav_msgs/Odometry.h>
-#include <pcl/common/transforms.h>
+#include <pcl/filters/voxel_grid.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <tf/transform_broadcaster.h>
 #include <eigen_conversions/eigen_msg.h>
 #include <pcl_conversions/pcl_conversions.h>
-#include <sensor_msgs/Imu.h>
-#include <sensor_msgs/PointCloud2.h>
-#include <geometry_msgs/Vector3.h>
 
-/// *************Preconfiguration
+#include <omp.h> 
 
-#define MAX_INI_COUNT (10)
-
-const bool time_list(PointType &x, PointType &y) {return (x.curvature < y.curvature);};
-
-/// *************IMU Process and undistortion
-class ImuProcess
+namespace imu_proc {
+bool time_list(PointType &x, PointType &y)
 {
- public:
-  EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-  ImuProcess();
-  ~ImuProcess();
-  
-  void Reset();
-  void Reset(double start_timestamp, const sensor_msgs::ImuConstPtr &lastimu);
-  void set_extrinsic(const V3D &transl, const M3D &rot);
-  void set_extrinsic(const V3D &transl);
-  void set_extrinsic(const MD(4,4) &T);
-  void set_gyr_cov(const V3D &scaler);
-  void set_acc_cov(const V3D &scaler);
-  void set_gyr_bias_cov(const V3D &b_g);
-  void set_acc_bias_cov(const V3D &b_a);
-  void set_contact_cov(const V3D &k_c);
-  Eigen::Matrix<double, 15, 15> Q;
-  void Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 15, input_ikfom> &kf_state, PointCloudXYZI::Ptr pcl_un_, Eigen::Matrix3d R_base_foot);
-  void PredictImuState(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 15, input_ikfom> &kf_state, int num_ped_imu_meas, Eigen::Matrix3d & R_base_foot);
-  ofstream fout_imu;
-  V3D cov_acc;
-  V3D cov_gyr;
-  V3D cov_acc_scale;
-  V3D cov_gyr_scale;
-  V3D cov_bias_gyr;
-  V3D cov_bias_acc;
-  V3D cov_contact;
-  double first_lidar_time;
-  bool imu_inited;
-
- private:
-  void IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 15, input_ikfom> &kf_state, int &N);
-  void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 15, input_ikfom> &kf_state, PointCloudXYZI &pcl_in_out, Eigen::Matrix3d R_base_foot);
-  
-  PointCloudXYZI::Ptr cur_pcl_un_;
-  sensor_msgs::ImuConstPtr last_imu_;
-  deque<sensor_msgs::ImuConstPtr> v_imu_;
-  vector<Pose6D> IMUpose;
-  vector<Pose6D> IMUposeWitOffsetT;
-  vector<M3D>    v_rot_pcl_;
-  M3D Lidar_R_wrt_IMU;
-  V3D Lidar_T_wrt_IMU;
-  V3D mean_gyr;
-  V3D angvel_last;
-  V3D acc_s_last;
-  double start_timestamp_;
-  double last_lidar_end_time;
-  V3D mean_acc;
-  deque<Pose6DTemp> IMUposeTemp;
-  Pose6DTemp IMUposeTempLast;
-
-  input_ikfom in_;
-  state_ikfom imu_state_;
-  
-  int    init_iter_num = 1;
-  bool   b_first_frame_ = true;
-  bool   imu_need_init_ = true;
-};
-
-ImuProcess::ImuProcess()
-    : b_first_frame_(true), imu_need_init_(true), start_timestamp_(-1), imu_inited(false)
-{
-  init_iter_num = 1;
-  Q = process_noise_cov();
-  cov_acc       = V3D(0.1, 0.1, 0.1);
-  cov_gyr       = V3D(0.1, 0.1, 0.1);
-  cov_bias_gyr  = V3D(0.0001, 0.0001, 0.0001);
-  cov_bias_acc  = V3D(0.0001, 0.0001, 0.0001);
-  mean_acc      = V3D(0, 0, -1.0);
-  mean_gyr      = V3D(0, 0, 0);
-  angvel_last     = Zero3d;
-  Lidar_T_wrt_IMU = Zero3d;
-  Lidar_R_wrt_IMU = Eye3d;
-  last_imu_.reset(new sensor_msgs::Imu());
+    return (x.curvature < y.curvature);
 }
 
-ImuProcess::~ImuProcess() {}
-
-void ImuProcess::Reset() 
+ImuProcess::ImuProcess()
+    : b_first_frame_(true),
+      imu_need_init_(true),
+      start_timestamp_(-1),
+      imu_inited(false)
 {
-  // ROS_WARN("Reset ImuProcess");
-  mean_acc      = V3D(0, 0, -1.0);
-  mean_gyr      = V3D(0, 0, 0);
-  angvel_last       = Zero3d;
-  imu_need_init_    = true;
-  start_timestamp_  = -1;
-  init_iter_num     = 1;
-  v_imu_.clear();
-  // IMUpose.clear();
-  last_imu_.reset(new sensor_msgs::Imu());
-  cur_pcl_un_.reset(new PointCloudXYZI());
+    init_iter_num = 1;
+    Q = ikfom_util::process_noise_cov();
+
+    cov_acc       = V3D(0.1, 0.1, 0.1);
+    cov_gyr       = V3D(0.1, 0.1, 0.1);
+    cov_bias_gyr  = V3D(0.0001, 0.0001, 0.0001);
+    cov_bias_acc  = V3D(0.0001, 0.0001, 0.0001);
+
+    mean_acc      = V3D(0, 0, -1.0);
+    mean_gyr      = V3D(0, 0, 0);
+    angvel_last   = Zero3d;
+
+    Lidar_T_wrt_IMU = Zero3d;
+    Lidar_R_wrt_IMU = Eye3d;
+
+    last_imu_.reset(new sensor_msgs::Imu());
+}
+
+ImuProcess::~ImuProcess() = default;
+
+void ImuProcess::Reset()
+{
+    mean_acc      = V3D(0, 0, -1.0);
+    mean_gyr      = V3D(0, 0, 0);
+    angvel_last   = Zero3d;
+    imu_need_init_    = true;
+    start_timestamp_  = -1;
+    init_iter_num     = 1;
+    v_imu_.clear();
+    last_imu_.reset(new sensor_msgs::Imu());
+    cur_pcl_un_.reset(new PointCloudXYZI());
 }
 
 void ImuProcess::set_extrinsic(const MD(4,4) &T)
 {
-  Lidar_T_wrt_IMU = T.block<3,1>(0,3);
-  Lidar_R_wrt_IMU = T.block<3,3>(0,0);
+    Lidar_T_wrt_IMU = T.block<3,1>(0,3);
+    Lidar_R_wrt_IMU = T.block<3,3>(0,0);
 }
 
 void ImuProcess::set_extrinsic(const V3D &transl)
@@ -310,7 +240,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
   
   /*** sort point clouds by offset time ***/
   pcl_out = *(meas.lidar);
-  sort(pcl_out.points.begin(), pcl_out.points.end(), time_list);
+  sort(pcl_out.points.begin(), pcl_out.points.end(), imu_proc::time_list);
   // /*** forward propagation at each imu point ***/
   V3D angvel_avr, acc_imu, vel_imu, pos_imu;
   M3D R_imu;
@@ -412,3 +342,4 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
   
   // cout<<"[ IMU Process ]: Time: "<<t3 - t1<<endl;
 }
+} // namespace imu_proc

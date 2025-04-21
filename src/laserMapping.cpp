@@ -63,6 +63,7 @@
 #include <geometry_msgs/Vector3.h>
 #include <livox_ros_driver/CustomMsg.h>
 #include "preprocess.h"
+#include "particle_filter.hpp"
 
 #include <ikd-Tree/ikd_Tree.h>
 // #include <pinocchio/parsers/urdf.hpp>
@@ -72,13 +73,15 @@
 // #include "pinocchio/algorithm/center-of-mass.hpp"
 // #include "pinocchio/algorithm/frames.hpp"
 #include <ros/callback_queue.h>
-
+using ikfom_util::SO3ToEuler;
 
 #define INIT_TIME           (0.1)
 #define LASER_POINT_COV     (0.001)
 #define MAXN                (720000)
 #define PUBFRAME_PERIOD     (20)
 #define M_PI		3.14159265358979323846	/* pi */
+#define NUM_PARTICLES 15
+
 
 /*** Time Log Variables ***/
 double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_time = 0.0;
@@ -148,6 +151,7 @@ M3D Lidar_R_wrt_IMU(Eye3d);
 /*** EKF inputs and output ***/
 MeasureGroup Measures;
 esekfom::esekf<state_ikfom, 15, input_ikfom> kf;
+static RBPFSLAM rbpf(NUM_PARTICLES);
 state_ikfom state_point;
 vect3 pos_lid;
 
@@ -158,7 +162,7 @@ geometry_msgs::PoseStamped msg_body_pose;
 nav_msgs::Odometry likoSE;
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
-shared_ptr<ImuProcess> p_imu(new ImuProcess());
+shared_ptr<imu_proc::ImuProcess> p_imu(new imu_proc::ImuProcess());
 
 Matrix3d R_base_imu;
 Vector3d t_base_imu;
@@ -198,6 +202,17 @@ void SigHandle(int sig)
     ROS_WARN("catch sig %d", sig);
     sig_buffer.notify_all();
 }
+
+//
+inline pcl::PointCloud<PointType>::Ptr downsample(const pcl::PointCloud<PointType>::Ptr &in) {
+    static pcl::VoxelGrid<PointType> vg;
+    vg.setLeafSize(0.25, 0.25, 0.25);
+    auto out = boost::make_shared<pcl::PointCloud<PointType>>();
+    vg.setInputCloud(in);
+    vg.filter(*out);
+    return out;
+}
+
 
 inline void dump_lio_state_to_log(FILE *fp)  
 {
@@ -734,7 +749,7 @@ void publish_liko_se(const ros::Publisher & pubLikoSE)
     likoSE.pose.pose.orientation.x = geoQuat.x;
     likoSE.pose.pose.orientation.y = geoQuat.y;
     likoSE.pose.pose.orientation.z = geoQuat.z;
-    likoSE.pose.pose.orientation.w = geoQuat.x;    
+    likoSE.pose.pose.orientation.w = geoQuat.w;    
 
     likoSE.twist.twist.linear.x = state_point.vel(0);
     likoSE.twist.twist.linear.y = state_point.vel(1);
@@ -778,7 +793,7 @@ void UpdateKinematicState(MeasureGroup &meas, esekfom::esekf<state_ikfom, 15, in
     rfoot_vel(1) = meas.foot_state->velocity[4];
     rfoot_vel(2) = meas.foot_state->velocity[5];
 }
-void UpdateContactPositionAftSwitch(const ContactPoint & contact)
+void UpdateContactPositionAftSwitch(const ContactPoint & contact, esekfom::esekf<state_ikfom,15,input_ikfom> &kf_local)
 {
     if(contact == ContactPoint::NONE)
     {
@@ -786,32 +801,32 @@ void UpdateContactPositionAftSwitch(const ContactPoint & contact)
     }
     if(contact == ContactPoint::LeftFoot)
     {
-        state_point.pc = state_point.rot.toRotationMatrix()*(t_imu_lfoot) + state_point.pos;
-        kf.change_x(state_point);
+        state_point.pc = state_point.rot.toRotationMatrix() * t_imu_lfoot + state_point.pos;
+        kf_local.change_x(state_point);
     }
     else if(contact == ContactPoint::RightFoot)
     {
         state_point.pc = state_point.rot.toRotationMatrix()*(t_imu_rfoot) + state_point.pos;
-        kf.change_x(state_point);
+        kf_local.change_x(state_point);
     }
 }
 
-void UpdateBodyPositionKine(const ContactPoint &contact)
+void UpdateBodyPositionKine(const ContactPoint &contact,
+    esekfom::esekf<state_ikfom,15,input_ikfom> &kf)
 {
-    if(contact == ContactPoint::NONE)
-    {
-        return;
-    }
-    if(contact == ContactPoint::LeftFoot)
-    {
-        body_position_kinematic = state_point.pc - state_point.rot.toRotationMatrix()*(t_imu_lfoot);
-        R_base_foot = R_base_lfoot;
-    }
-    else if(contact == ContactPoint::RightFoot)
-    {
-        body_position_kinematic = state_point.pc - state_point.rot.toRotationMatrix()*(t_imu_rfoot);
-        R_base_foot = R_base_rfoot;
-    }
+auto s = kf.get_x();
+
+if (contact == ContactPoint::NONE) return;
+
+if (contact == ContactPoint::LeftFoot) {
+// was: state_point.pc - state_point.rot.toRotationMatrix() * t_imu_lfoot
+body_position_kinematic = s.pc - s.rot.toRotationMatrix() * t_imu_lfoot;
+R_base_foot = R_base_lfoot;
+}
+else if (contact == ContactPoint::RightFoot) {
+body_position_kinematic = s.pc - s.rot.toRotationMatrix() * t_imu_rfoot;
+R_base_foot = R_base_rfoot;
+}
 }
 
 Vector3d KinematicVelocityEstimation(const MeasureGroup &meas, const ContactPoint &contact)
@@ -1045,15 +1060,15 @@ int main(int argc, char** argv)
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
     cout << "kineamtic_cov: " << kinematic_cov << endl;
 
-    path.header.stamp    = ros::Time::now();
-    path.header.frame_id ="camera_init";
+    path.header.stamp = ros::Time::now();
+    path.header.frame_id = "camera_init";
     ContactPoint contact = ContactPoint::NONE;
 
     /*** variables definition ***/
     int effect_feat_num = 0, frame_num = 0;
     double deltaT, deltaR, aver_time_consu = 0, aver_time_icp = 0, aver_time_match = 0, aver_time_incre = 0, aver_time_solve = 0, aver_time_const_H_time = 0;
     bool flg_EKF_converged, EKF_stop_flg = 0;
-    
+
     FOV_DEG = (fov_deg + 10.0) > 179.9 ? 179.9 : (fov_deg + 10.0);
     HALF_FOV_COS = cos((FOV_DEG) * 0.5 * PI_M / 180.0);
 
@@ -1066,8 +1081,9 @@ int main(int argc, char** argv)
     memset(point_selected_surf, true, sizeof(point_selected_surf));
     memset(res_last, -1000.0f, sizeof(res_last));
 
-    Lidar_T_wrt_IMU<<VEC_FROM_ARRAY(extrinT);
-    Lidar_R_wrt_IMU<<MAT_FROM_ARRAY(extrinR);
+    Lidar_T_wrt_IMU << VEC_FROM_ARRAY(extrinT);
+    Lidar_R_wrt_IMU << MAT_FROM_ARRAY(extrinR);
+    rbpf.setExtrinsics(Lidar_R_wrt_IMU, Lidar_T_wrt_IMU);
     p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
     p_imu->set_gyr_cov(V3D(gyr_cov, gyr_cov, gyr_cov));
     p_imu->set_acc_cov(V3D(acc_cov, acc_cov, acc_cov));
@@ -1077,41 +1093,36 @@ int main(int argc, char** argv)
     v_meas.setZero();
 
     double epsi[23] = {0.001};
-    fill(epsi, epsi+23, 0.001);
-    kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, epsi);
+    fill(epsi, epsi + 23, 0.001);
+    // kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, epsi);
 
     /*** debug record ***/
     FILE *fp;
     string pos_log_dir = root_dir + "/Log/pos_log.txt";
-    fp = fopen(pos_log_dir.c_str(),"w");
+    fp = fopen(pos_log_dir.c_str(), "w");
 
     ofstream fout_pre, fout_out, fout_dbg;
-    fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"),ios::out);
-    fout_out.open(DEBUG_FILE_DIR("mat_out.txt"),ios::out);
-    fout_dbg.open(DEBUG_FILE_DIR("dbg.txt"),ios::out);
+    fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"), ios::out);
+    fout_out.open(DEBUG_FILE_DIR("mat_out.txt"), ios::out);
+    fout_dbg.open(DEBUG_FILE_DIR("dbg.txt"), ios::out);
     if (fout_pre && fout_out)
-        cout << "~~~~"<<ROOT_DIR<<" file opened" << endl;
+        cout << "~~~~" << ROOT_DIR << " file opened" << endl;
     else
-        cout << "~~~~"<<ROOT_DIR<<" doesn't exist" << endl;
+        cout << "~~~~" << ROOT_DIR << " doesn't exist" << endl;
 
     /*** ROS subscribe initialization ***/
-    ros::Subscriber sub_pcl = p_pre->lidar_type == AVIA ? \
-        nh.subscribe(lid_topic, 200000, livox_pcl_cbk) : \
-        nh.subscribe(lid_topic, 200000, standard_pcl_cbk);
+    ros::Subscriber sub_pcl = p_pre->lidar_type == AVIA
+                                   ? nh.subscribe(lid_topic, 200000, livox_pcl_cbk)
+                                   : nh.subscribe(lid_topic, 200000, standard_pcl_cbk);
     ros::Subscriber sub_imu = nh.subscribe(imu_topic, 200000, imu_cbk);
     ros::Subscriber sub_encoder = nh.subscribe(encoder_topic, 200000, encoder_cbk);
     ros::Subscriber sub_lfootf = nh.subscribe(l_foot_force_topic, 200000, l_foot_force_cbk);
     ros::Subscriber sub_rfootf = nh.subscribe(r_foot_force_topic, 200000, r_foot_force_cbk);
-    ros::Publisher pubLaserCloudFull = nh.advertise<sensor_msgs::PointCloud2>
-            ("/cloud_registered", 100000);
-    ros::Publisher pubLaserCloudFull_body = nh.advertise<sensor_msgs::PointCloud2>
-            ("/cloud_registered_body", 100000);
-    ros::Publisher pubLaserCloudEffect = nh.advertise<sensor_msgs::PointCloud2>
-            ("/cloud_effected", 100000);
-    ros::Publisher pubLaserCloudMap = nh.advertise<sensor_msgs::PointCloud2>
-            ("/Laser_map", 100000);
-    ros::Publisher pubOdomAftMapped = nh.advertise<nav_msgs::Odometry> 
-            ("/Odometry", 200000);
+    ros::Publisher pubLaserCloudFull = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered", 100000);
+    ros::Publisher pubLaserCloudFull_body = nh.advertise<sensor_msgs::PointCloud2>("/cloud_registered_body", 100000);
+    ros::Publisher pubLaserCloudEffect = nh.advertise<sensor_msgs::PointCloud2>("/cloud_effected", 100000);
+    ros::Publisher pubLaserCloudMap = nh.advertise<sensor_msgs::PointCloud2>("/Laser_map", 100000);
+    ros::Publisher pubOdomAftMapped = nh.advertise<nav_msgs::Odometry>("/Odometry", 200000);
     ros::Publisher pubPath          = nh.advertise<nav_msgs::Path> 
             ("/path", 100000);
     ros::Publisher pubLikoSE = nh.advertise<nav_msgs::Odometry>("/liko", 20);
@@ -1145,9 +1156,49 @@ int main(int argc, char** argv)
             svd_time   = 0;
             t0 = omp_get_wtime();
 
+            /*
             p_imu->Process(Measures, kf, feats_undistort, R_base_foot); // 这里边就做完预测了。
             state_point = kf.get_x();
             pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
+            */
+
+            // 1) propagate every particle’s EKF with IMU
+            rbpf.imuPredict(Measures, R_base_foot);
+
+            // 2) down‑sample the (undistorted) point‑cloud
+            auto down = downsample(feats_undistort);
+
+            // 3) update every particle’s map & weight with LiDAR
+            rbpf.lidarUpdate(Measures, down);
+
+            // 4) pick the best particle, extract its EKF state
+
+
+            const auto &best = rbpf.best();
+
+            kf.change_x( best.kf.get_x() );
+            kf.change_P( best.kf.get_P() );
+
+            auto x   = best.pose.x;
+            auto y   = best.pose.y;
+            auto yaw = best.pose.yaw;
+
+            state_point = kf.get_x();
+            state_point.pos.x() = x;
+            state_point.pos.y() = y;
+            state_point.rot     = Eigen::Quaterniond(
+            Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ())
+            );
+
+            // 更新到 ROS quaternion
+            geoQuat.x = state_point.rot.x();
+            geoQuat.y = state_point.rot.y();
+            geoQuat.z = state_point.rot.z();
+            geoQuat.w = state_point.rot.w();
+            // 更新 lidar‐to‐body offset
+            pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
+
+            
             // std::cout << "foo/n " << std::endl;
             if (feats_undistort->empty() || (feats_undistort == NULL))
             {
@@ -1208,30 +1259,40 @@ int main(int argc, char** argv)
                 featsFromMap->points = ikdtree.PCL_Storage;
             }
 
-            pointSearchInd_surf.resize(feats_down_size);
-            Nearest_Points.resize(feats_down_size);
-            int  rematch_num = 0;
-            bool nearest_search_en = true; //
+            // pointSearchInd_surf.resize(feats_down_size);
+            // Nearest_Points.resize(feats_down_size);
+            // int  rematch_num = 0;
+            // bool nearest_search_en = true; //
 
-            t2 = omp_get_wtime();
+            // t2 = omp_get_wtime();
             
-            /*** iterated state estimation ***/
-            double t_update_start = omp_get_wtime();
-            double solve_H_time = 0;
-            lidar_update = true;
-            kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time, NUM_MAX_ITERATIONS);
-            state_point = kf.get_x();
-            euler_cur = SO3ToEuler(state_point.rot);
-            pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
-            geoQuat.x = state_point.rot.coeffs()[0];
-            geoQuat.y = state_point.rot.coeffs()[1];
-            geoQuat.z = state_point.rot.coeffs()[2];
-            geoQuat.w = state_point.rot.coeffs()[3];
+            // /*** iterated state estimation ***/
+            // double t_update_start = omp_get_wtime();
+            // double solve_H_time = 0;
+            // lidar_update = true;
 
-            double t_update_end = omp_get_wtime();
+            // // new
+            // // rbpf.imuPredict(Measures, R_base_foot);      // for IMU
+            // // auto down = downsample(cur_pcl_un_);         // downsample step
+            // // rbpf.lidarUpdate(Measures, down);            // for LiDAR
+
+            // for (auto &p: rbpf.particles_) {
+            //     p.kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time, NUM_MAX_ITERATIONS);
+            // }
+            // // kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time, NUM_MAX_ITERATIONS);
+            // state_point = kf.get_x();
+            // euler_cur = SO3ToEuler(state_point.rot);
+            // pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
+            // geoQuat.x = state_point.rot.coeffs()[0];
+            // geoQuat.y = state_point.rot.coeffs()[1];
+            // geoQuat.z = state_point.rot.coeffs()[2];
+            // geoQuat.w = state_point.rot.coeffs()[3];
+
+            // double t_update_end = omp_get_wtime();
 
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped);
+            // publish_odometry(best.kf.get_x());
             publish_liko_se(pubLikoSE);
 
             /*** add the feature points to map kdtree ***/
@@ -1247,34 +1308,34 @@ int main(int argc, char** argv)
             // publish_map(pubLaserCloudMap);
 
             /*** Debug variables ***/
-            if (runtime_pos_log)
-            {
-                frame_num ++;
-                kdtree_size_end = ikdtree.size();
-                aver_time_consu = aver_time_consu * (frame_num - 1) / frame_num + (t5 - t0) / frame_num;
-                aver_time_icp = aver_time_icp * (frame_num - 1)/frame_num + (t_update_end - t_update_start) / frame_num;
-                aver_time_match = aver_time_match * (frame_num - 1)/frame_num + (match_time)/frame_num;
-                aver_time_incre = aver_time_incre * (frame_num - 1)/frame_num + (kdtree_incremental_time)/frame_num;
-                aver_time_solve = aver_time_solve * (frame_num - 1)/frame_num + (solve_time + solve_H_time)/frame_num;
-                aver_time_const_H_time = aver_time_const_H_time * (frame_num - 1)/frame_num + solve_time / frame_num;
-                T1[time_log_counter] = Measures.lidar_beg_time;
-                s_plot[time_log_counter] = t5 - t0;
-                s_plot2[time_log_counter] = feats_undistort->points.size();
-                s_plot3[time_log_counter] = kdtree_incremental_time;
-                s_plot4[time_log_counter] = kdtree_search_time;
-                s_plot5[time_log_counter] = kdtree_delete_counter;
-                s_plot6[time_log_counter] = kdtree_delete_time;
-                s_plot7[time_log_counter] = kdtree_size_st;
-                s_plot8[time_log_counter] = kdtree_size_end;
-                s_plot9[time_log_counter] = aver_time_consu;
-                s_plot10[time_log_counter] = add_point_size;
-                time_log_counter ++;
-                printf("[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: %0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave total: %0.6f icp: %0.6f construct H: %0.6f \n",t1-t0,aver_time_match,aver_time_solve,t3-t1,t5-t3,aver_time_consu,aver_time_icp, aver_time_const_H_time);
-                ext_euler = SO3ToEuler(Lidar_R_wrt_IMU);
-                fout_out << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose()<< " " << ext_euler.transpose() << " "<<Lidar_T_wrt_IMU.transpose()<<" "<< state_point.vel.transpose() \
-                <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<<" "<<feats_undistort->points.size()<<endl;
-                dump_lio_state_to_log(fp);
-            }
+            // if (runtime_pos_log)
+            // {
+            //     frame_num ++;
+            //     kdtree_size_end = ikdtree.size();
+            //     aver_time_consu = aver_time_consu * (frame_num - 1) / frame_num + (t5 - t0) / frame_num;
+            //     aver_time_icp = aver_time_icp * (frame_num - 1)/frame_num + (t_update_end - t_update_start) / frame_num;
+            //     aver_time_match = aver_time_match * (frame_num - 1)/frame_num + (match_time)/frame_num;
+            //     aver_time_incre = aver_time_incre * (frame_num - 1)/frame_num + (kdtree_incremental_time)/frame_num;
+            //     aver_time_solve = aver_time_solve * (frame_num - 1)/frame_num + (solve_time + solve_H_time)/frame_num;
+            //     aver_time_const_H_time = aver_time_const_H_time * (frame_num - 1)/frame_num + solve_time / frame_num;
+            //     T1[time_log_counter] = Measures.lidar_beg_time;
+            //     s_plot[time_log_counter] = t5 - t0;
+            //     s_plot2[time_log_counter] = feats_undistort->points.size();
+            //     s_plot3[time_log_counter] = kdtree_incremental_time;
+            //     s_plot4[time_log_counter] = kdtree_search_time;
+            //     s_plot5[time_log_counter] = kdtree_delete_counter;
+            //     s_plot6[time_log_counter] = kdtree_delete_time;
+            //     s_plot7[time_log_counter] = kdtree_size_st;
+            //     s_plot8[time_log_counter] = kdtree_size_end;
+            //     s_plot9[time_log_counter] = aver_time_consu;
+            //     s_plot10[time_log_counter] = add_point_size;
+            //     time_log_counter ++;
+            //     printf("[ mapping ]: time: IMU + Map + Input Downsample: %0.6f ave match: %0.6f ave solve: %0.6f  ave ICP: %0.6f  map incre: %0.6f ave total: %0.6f icp: %0.6f construct H: %0.6f \n",t1-t0,aver_time_match,aver_time_solve,t3-t1,t5-t3,aver_time_consu,aver_time_icp, aver_time_const_H_time);
+            //     ext_euler = SO3ToEuler(Lidar_R_wrt_IMU);
+            //     fout_out << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose()<< " " << ext_euler.transpose() << " "<<Lidar_T_wrt_IMU.transpose()<<" "<< state_point.vel.transpose() \
+            //     <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<<" "<<feats_undistort->points.size()<<endl;
+            //     dump_lio_state_to_log(fp);
+            // }
             Measures.imu.clear();
         }
         else if(new_imu_meas)
@@ -1332,13 +1393,21 @@ int main(int argc, char** argv)
               if(contact_change_num > 2)
               {
                 prev_contact = contact;
-                UpdateKinematicState(Measures, kf, prev_contact);
-                UpdateContactPositionAftSwitch(prev_contact);
+
+                // UpdateKinematicState(Measures, kf, prev_contact);
+                // UpdateContactPositionAftSwitch(prev_contact);
+                for (auto &p: rbpf.particles_) {
+                    UpdateKinematicState(Measures, p.kf, prev_contact);
+                    UpdateContactPositionAftSwitch(prev_contact, p.kf);
+                }
               }
             }    
             else
             {
-                UpdateKinematicState(Measures, kf, prev_contact);
+                for (auto &p: rbpf.particles_) {
+                    UpdateKinematicState(Measures, p.kf, prev_contact);
+                    UpdateContactPositionAftSwitch(prev_contact, p.kf);
+                }
             }
 
             if(p_imu->imu_inited)
@@ -1347,14 +1416,18 @@ int main(int argc, char** argv)
                 
                 velocity_residual = v_meas - state_point.vel;
 
-                UpdateBodyPositionKine(prev_contact);
+                for (auto &p: rbpf.particles_) {
+                    UpdateBodyPositionKine(prev_contact, p.kf);
+                    UpdateContactPositionAftSwitch(prev_contact, p.kf);
+                }
 
                 position_residual = body_position_kinematic - state_point.pos;
                 double solve_H_time = 0;
                 if(v_meas!=Eigen::Vector3d::Zero())
                 {
                     lidar_update = false;
-                    kf.update_iterated_dyn_share_modified(kinematic_update_cov, solve_H_time, 1);
+                    for (auto &p: rbpf.particles_)
+                        p.kf.update_iterated_dyn_share_modified(kinematic_update_cov, solve_H_time, 1);
                     
                     // ROS_INFO("published");
                 }   

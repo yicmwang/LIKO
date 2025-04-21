@@ -67,13 +67,38 @@ include_directories(
   ${EIGEN3_INCLUDE_DIR}
   ${PCL_INCLUDE_DIRS}
   ${PYTHON_INCLUDE_DIRS}
+  include/IKFoM_toolkit
   include)
 
 add_message_files(
   FILES
   Pose6D.msg
 )
+add_library(common_lib STATIC
+    src/common_lib.cpp
+)
+target_include_directories(common_lib
+    PUBLIC ${CMAKE_SOURCE_DIR}/include)
+add_library(use-ikfom STATIC src/use-ikfom.cpp) 
 
+target_include_directories(use-ikfom
+    PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
+add_library(particle_filter STATIC
+    src/particle_filter.cpp
+    src/IMU_Processing.cpp
+)
+target_link_libraries(particle_filter PUBLIC
+        ${catkin_LIBRARIES}
+        ${PCL_LIBRARIES}
+        Eigen3::Eigen 
+        common_lib 
+        particle_filter
+        use-ikfom 
+)
+target_include_directories(particle_filter
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 
 generate_messages(
  DEPENDENCIES
@@ -83,12 +108,15 @@ generate_messages(
 catkin_package(
   CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy std_msgs message_runtime sensor_msgs
   DEPENDS EIGEN3 PCL
+  LIBRARIES particle_filter 
   INCLUDE_DIRS
 )
 
 add_executable(liko_se src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp src/preprocess.cpp)
-target_link_libraries(liko_se ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} )
-target_include_directories(liko_se PRIVATE ${PYTHON_INCLUDE_DIRS} )
+target_link_libraries(liko_se PRIVATE particle_filter ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} )
+target_include_directories(liko_se PRIVATE ${PYTHON_INCLUDE_DIRS} ${catkin_INCLUDE_DIRS} )
+
+
 
 # DEBUG
 set(CMAKE_BUILD_TYPE"Debug")

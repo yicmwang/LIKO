@@ -38,6 +38,7 @@
 
 #include <vector>
 #include <cstdlib>
+#include <memory>
 
 #include <boost/bind.hpp>
 #include <Eigen/Core>
@@ -58,6 +59,16 @@
 namespace esekfom {
 
 using namespace Eigen;
+
+// -----------------------------------------------------------------------------
+// 多維度量測迭代動態更新 (share_modified)
+//   H:       m×n 全量測雅可比
+//   h:       m×1 預測量測向量
+//   sigma2:  量測噪聲變異數
+//   solve_time: 執行時間統計 (秒)
+// -----------------------------------------------------------------------------
+
+
 
 //used for iterated error state EKF update
 //for the aim to calculate  measurement (z), estimate measurement (h), partial differention matrices (h_x, h_v) and the noise covariance (R) at the same time, by only one function.
@@ -104,8 +115,7 @@ struct dyn_runtime_share_datastruct
 
 template<typename state, int process_noise_dof, typename input = state, typename measurement=state, int measurement_noise_dof=0>
 class esekf{
-
-	typedef esekf self;
+	using self = esekf;
 	enum{
 		n = state::DOF, m = state::DIM, l = measurement::DOF
 	};
@@ -145,7 +155,9 @@ public:
 		f_x_1 = ref;
 	#endif
 	};
-
+	std::unique_ptr<self> clone() const {
+		return std::make_unique<self>(*this);
+	}
 	//receive system-specific models and their differentions.
 	//for measurement as a manifold.
 	void init(processModel f_in, processMatrix1 f_x_in, processMatrix2 f_w_in, measurementModel h_in, measurementMatrix1 h_x_in, measurementMatrix2 h_v_in, int maximum_iteration, scalar_type limit_vector[n])
@@ -589,6 +601,26 @@ public:
 		}
 	}
 
+	void update_iterated_dyn_share_modified1(
+		const Eigen::Matrix<scalar_type, Eigen::Dynamic, n> &H,
+		const Eigen::Matrix<scalar_type, Eigen::Dynamic, 1> &h,
+		scalar_type sigma2,
+		double &solve_time)
+	{
+		using HRow = Eigen::Matrix<scalar_type, 1, n>;
+		Eigen::Matrix<scalar_type, Eigen::Dynamic, 1> z = Eigen::Matrix<scalar_type, Eigen::Dynamic, 1>::Zero(h.size());
+
+
+		for (int i = 0; i < h.size(); ++i) {
+			HRow H_i = H.row(i);
+			scalar_type h_i = h(i);
+
+			double t0 = omp_get_wtime();
+
+			update_iterated_dyn_share_modified(H_i, h_i, sigma2); //???
+			solve_time += omp_get_wtime() - t0;
+		}
+	}
 	//iterated error state EKF update for measurement as a manifold.
 	//calculate measurement (z), estimate measurement (h), partial differention matrices (h_x, h_v) and the noise covariance (R) at the same time, by only one function.
 	void update_iterated_share() {
@@ -1935,7 +1967,7 @@ public:
 		}
 	}
 
-	void change_x(state &input_state)
+	void change_x(const state &input_state)
 	{
 		x_ = input_state;
 		if((!x_.vect_state.size())&&(!x_.SO3_state.size())&&(!x_.S2_state.size()))
@@ -1946,7 +1978,7 @@ public:
 		}
 	}
 
-	void change_P(cov &input_cov)
+	void change_P(const cov &input_cov)
 	{
 		P_ = input_cov;
 	}
