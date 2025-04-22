@@ -178,7 +178,7 @@ template<typename T> bool esti_plane(Matrix<T, 4, 1> &pca_result, const PointVec
     // ROS_INFO("esti_plane");
     // std::cout << point.size();
     if (point.size() < NUM_MATCH_POINTS) {
-        ROS_WARN("esti_plane: not enough neighbors! got %zu, require %d");
+        ROS_WARN("esti_plane: not enough neighbors! got %zu, require %d", point.size(), NUM_MATCH_POINTS);
         // pts_near.size(), NUM_MATCH_POINTS, i);;
         // for (int j = pts_near.size(); j < NUM_MATCH_POINTS; ++j)
         //     pts_near.push_back(pts_near.back());

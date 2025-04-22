@@ -62,8 +62,10 @@ public:
     void imuPredict(const MeasureGroup &meas, const Eigen::Matrix3d &R_base_foot);
     void lidarUpdate(const MeasureGroup &meas, pcl::PointCloud<PointType>::Ptr down);
     const Particle& best() const;
+    void init_dyn(esekfom::esekf<state_ikfom, 15, input_ikfom> kf);
 
 private:
+    double solvetime = 0;
     int num_particles_;
     std::vector<Particle> particles_;
 

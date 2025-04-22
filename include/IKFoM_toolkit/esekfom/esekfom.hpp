@@ -40,6 +40,8 @@
 #include <cstdlib>
 #include <memory>
 
+// #include "ros/ros.h"
+
 #include <boost/bind.hpp>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -1457,7 +1459,7 @@ public:
 		cov P_propagated = P_;
 		int dof_Measurement;
 		int dof_Measurement_noise;
-		for(int i=-1; i<maximum_iter; i++)
+		for(int i=0; i <= maximum_iter; i++)
 		{
 			dyn_share.valid = true;
 			measurement_runtime h_ = h(x_,  dyn_share); 
@@ -1669,6 +1671,7 @@ public:
 		vectorized_state dx_new = vectorized_state::Zero();
 		for(int i=-1; i<maximum_iter; i++)
 		{
+			printf("update_iterated_dyn_share_modified iter %d\n", i);
 			dyn_share.valid = true;	
 			h_dyn_share(x_, dyn_share);
 
@@ -1695,6 +1698,7 @@ public:
 
 			Matrix<scalar_type, 3, 3> res_temp_SO3;
 			MTK::vect<3, scalar_type> seg_SO3;
+			// ROS_INFO("Inner Loop");
 			for (std::vector<std::pair<int, int> >::iterator it = x_.SO3_state.begin(); it != x_.SO3_state.end(); it++) { // 姿态和外参姿态
 				int idx = (*it).first;
 				int dim = (*it).second;

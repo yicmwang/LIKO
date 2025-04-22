@@ -16,6 +16,11 @@ void RBPFSLAM::setExtrinsics(M3D Lidar_R, V3D Lidar_T){
     Lidar_T_wrt_IMU = Lidar_T;
 }
 
+void RBPFSLAM::init_dyn(esekfom::esekf<state_ikfom, 15, input_ikfom> kf){
+    particles_[0].kf = kf;
+    for (int i = 1; i < num_particles_; ++i)
+            particles_[i].kf = particles_[0].kf;
+}
 
 void RBPFSLAM::imuPredict(const MeasureGroup &meas, const Eigen::Matrix3d &R_base_foot) {
 
@@ -106,33 +111,30 @@ void RBPFSLAM::lidarUpdate(const MeasureGroup &meas,
                     };
         p.kf.change_x(s);
 
-        if (!p.map_cloud || p.map_cloud->empty()) {
-            ROS_WARN("map_cloud is empty! init with current scan.");
+        pcl::PointCloud<PointType>::Ptr world_scan(new pcl::PointCloud<PointType>);
+        world_scan->reserve(down->size());
 
-            if (!p.map_cloud)
-                p.map_cloud.reset(new pcl::PointCloud<PointType>());
-            *p.map_cloud = *down;
+        Eigen::Matrix3d Rwb = s.rot.toRotationMatrix();
+        Eigen::Vector3d pwb = s.pos;
 
-            pcl::PointCloud<PointType>::Ptr world_pts(new pcl::PointCloud<PointType>);
-            Eigen::Matrix3d Rwb = s.rot.toRotationMatrix();
-            Eigen::Vector3d pwb = s.pos;
-            for (const auto &pt : *down) {
-                Eigen::Vector3d pl(pt.x,pt.y,pt.z);
-                Eigen::Vector3d pb = Lidar_R_wrt_IMU * pl + Lidar_T_wrt_IMU;
-                Eigen::Vector3d pw = Rwb * pb + pwb;
-                PointType w; w.x = pw.x(); w.y = pw.y(); w.z = pw.z();
-                world_scan->push_back(w);
-            }
-
-
-            p.ikdtree.Build(world_pts->points);
-            ROS_INFO("Initial map_cloud + KD-tree built for one particle");
-
-            continue;
+        for (const auto &pt : *down) {
+            Eigen::Vector3d pl(pt.x,pt.y,pt.z);
+            Eigen::Vector3d pb = Lidar_R_wrt_IMU * pl + Lidar_T_wrt_IMU;
+            Eigen::Vector3d pw = Rwb * pb + pwb;
+            PointType w; w.x = pw.x(); w.y = pw.y(); w.z = pw.z();
+            world_scan->push_back(w);
         }
 
-        ROS_INFO("map_cloud size = %zu", p.map_cloud->points.size());
-        p.ikdtree.Add_Points(p.map_cloud->points, false); 
+        if (!p.map_cloud) {
+            p.map_cloud = world_scan;
+            p.ikdtree.Build(p.map_cloud->points);
+        } else {
+            p.map_cloud->points.insert(p.map_cloud->points.end(),
+                                       world_scan->points.begin(),
+                                       world_scan->points.end());
+            p.ikdtree.Add_Points(world_scan->points, /*rebuild=*/false);
+        }
+
 
         // auto down = downsample(pcl);
 
@@ -144,15 +146,13 @@ void RBPFSLAM::lidarUpdate(const MeasureGroup &meas,
 
         // (3) zero out the PF (x,y,yaw) cols → only update the other 15 dims
         //H.block(0, 0, H.rows(), 6).setZero();
-     
-        H.block(0, 2, H.rows(), 1).setZero();
-        H.block(0, 6, H.rows(), 2).setZero();
-        
-
-        // (4) build a σ²·I measurement‐noise matrix and do the iterated EKF
-        Eigen::MatrixXd R_cov = Eigen::MatrixXd::Identity(h.size(), h.size()) * sigma2;
-        ROS_INFO("update_iterated_dyn");
-        p.kf.update_iterated_dyn(h, R_cov);
+        ROS_INFO("update_iterated_dyn_share_modified");
+        if (H.rows() > 0) {
+            // H.block(0,  2, H.rows(), 1).setZero();
+            // H.block(0,  6, H.rows(), 2).setZero();
+            // Eigen::MatrixXd R = Eigen::MatrixXd::Identity(h.size(), h.size()) * sigma2;
+            p.kf.update_iterated_dyn_share_modified(sigma2, solvetime, 4);
+        }
 
         // (5) re‐weight PF
         p.weight *= std::exp(-0.5 * res / sigma2);
@@ -260,6 +260,8 @@ double RBPFSLAM::computePointPlaneResidual(
     query.z = static_cast<float>(p_world.z());
     // ROS_INFO("Nearest_Search, %d", pts_near.size());
     tree.Nearest_Search(query, K, pts_near, dists, 5.0f);
+
+
     if (pts_near.size() < NUM_MATCH_POINTS) {
         ROS_WARN("esti_plane: not enough neighbors! got %zu, require %d. iteration number %d",
         pts_near.size(), NUM_MATCH_POINTS, i);;
@@ -269,13 +271,13 @@ double RBPFSLAM::computePointPlaneResidual(
     // std::cout << pts_near.size();
     // plane fit
     Eigen::Vector4d abcd;
-    H.row(i).setZero(); 
     // ROS_INFO("esti_plane");
     if(!esti_plane(abcd, pts_near, 0.1f)){
         // ROS_INFO("esti_plane if statement");
-         h(i)=0; 
+        H.row(i).setZero(); 
+        h(i)=0; 
         //  ROS_INFO("esti_plane if statement done");
-         continue; 
+        continue; 
         }
 
     Eigen::Vector3d normal(abcd[0], abcd[1], abcd[2]);

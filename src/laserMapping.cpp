@@ -64,6 +64,8 @@
 #include <livox_ros_driver/CustomMsg.h>
 #include "preprocess.h"
 #include "particle_filter.hpp"
+#include <use-ikfom.hpp>
+
 
 #include <ikd-Tree/ikd_Tree.h>
 // #include <pinocchio/parsers/urdf.hpp>
@@ -539,10 +541,12 @@ void map_incremental()
 {
     PointVector PointToAdd;
     PointVector PointNoNeedDownsample;
+    ROS_INFO("feats_down_size");
     PointToAdd.reserve(feats_down_size);
     PointNoNeedDownsample.reserve(feats_down_size);
     for (int i = 0; i < feats_down_size; i++)
     {
+        ROS_INFO("map incre iter %d", i);
         /* transform to world frame */
         pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
         /* decide if need add to map */
@@ -555,6 +559,7 @@ void map_incremental()
             mid_point.x = floor(feats_down_world->points[i].x/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
             mid_point.y = floor(feats_down_world->points[i].y/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
             mid_point.z = floor(feats_down_world->points[i].z/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
+            ROS_INFO("calc_dist");
             float dist  = calc_dist(feats_down_world->points[i],mid_point);
             if (fabs(points_near[0].x - mid_point.x) > 0.5 * filter_size_map_min && fabs(points_near[0].y - mid_point.y) > 0.5 * filter_size_map_min && fabs(points_near[0].z - mid_point.z) > 0.5 * filter_size_map_min){
                 PointNoNeedDownsample.push_back(feats_down_world->points[i]);
@@ -579,9 +584,11 @@ void map_incremental()
 
     double st_time = omp_get_wtime();
     add_point_size = ikdtree.Add_Points(PointToAdd, true);
+    ROS_INFO("ikdtree.Add_Points");
     ikdtree.Add_Points(PointNoNeedDownsample, false); 
     add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
     kdtree_incremental_time = omp_get_wtime() - st_time;
+    ROS_INFO("Done.");
 }
 
 PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI(500000, 1));
@@ -1099,7 +1106,8 @@ int main(int argc, char** argv)
 
     double epsi[23] = {0.001};
     fill(epsi, epsi + 23, 0.001);
-    // kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, epsi);
+    kf.init_dyn_share(ikfom_util::get_f, ikfom_util::df_dx, ikfom_util::df_dw, h_share_model, epsi);
+    rbpf.init_dyn(kf);
 
     /*** debug record ***/
     FILE *fp;
@@ -1189,6 +1197,7 @@ int main(int argc, char** argv)
             // 3) update every particle’s map & weight with LiDAR
             ROS_WARN("lidarUpdate");
             rbpf.lidarUpdate(Measures, down);
+            ROS_INFO("PF 1 loop finished");
 
             // 4) pick the best particle, extract its EKF state
 
@@ -1217,6 +1226,9 @@ int main(int argc, char** argv)
             // 更新 lidar‐to‐body offset
             pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
 
+            kf = best.kf;
+
+
             
             // std::cout << "foo/n " << std::endl;
             if (feats_undistort->empty() || (feats_undistort == NULL))
@@ -1225,9 +1237,9 @@ int main(int argc, char** argv)
                 continue;
             }
             else {
-                ROS_WARN("Success\n");
+                ROS_WARN("Success feats_undistort\n");
             }
-
+            // start
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;
             /*** Segment the map in lidar FOV ***/
@@ -1255,30 +1267,30 @@ int main(int argc, char** argv)
             }
             int featsFromMapNum = ikdtree.validnum();
             kdtree_size_st = ikdtree.size();
-            
+            ROS_INFO("KD Tree Built");
             // cout<<"[ mapping ]: In num: "<<feats_undistort->points.size()<<" downsamp "<<feats_down_size<<" Map num: "<<featsFromMapNum<<"effect num:"<<effct_feat_num<<endl;
 
             /*** ICP and iterated Kalman filter update ***/ //??
-            if (feats_down_size < 5)
-            {
-                ROS_WARN("No point, skip this scan!\n");
-                continue;
-            }
+            // if (feats_down_size < 5)
+            // {
+            //     ROS_WARN("No point, skip this scan!\n");
+            //     continue;
+            // }
             
-            normvec->resize(feats_down_size);
-            feats_down_world->resize(feats_down_size);
+            // normvec->resize(feats_down_size);
+            // feats_down_world->resize(feats_down_size);
 
-            V3D ext_euler = SO3ToEuler(Lidar_R_wrt_IMU);
-            fout_pre<<setw(20)<<Measures.lidar_beg_time - first_lidar_time<<" "<<euler_cur.transpose()<<" "<< state_point.pos.transpose()<<" "<<ext_euler.transpose() << " "<<Lidar_T_wrt_IMU.transpose()<< " " << state_point.vel.transpose() \
-            <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<< endl;
+            // V3D ext_euler = SO3ToEuler(Lidar_R_wrt_IMU);
+            // fout_pre<<setw(20)<<Measures.lidar_beg_time - first_lidar_time<<" "<<euler_cur.transpose()<<" "<< state_point.pos.transpose()<<" "<<ext_euler.transpose() << " "<<Lidar_T_wrt_IMU.transpose()<< " " << state_point.vel.transpose() \
+            // <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<< endl;
 
-            if(0) // If you need to see map point, change to "if(1)"
-            {
-                PointVector ().swap(ikdtree.PCL_Storage);
-                ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
-                featsFromMap->clear();
-                featsFromMap->points = ikdtree.PCL_Storage;
-            }
+            // if(0) // If you need to see map point, change to "if(1)"
+            // {
+            //     PointVector ().swap(ikdtree.PCL_Storage);
+            //     ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
+            //     featsFromMap->clear();
+            //     featsFromMap->points = ikdtree.PCL_Storage;
+            // }
 
             // pointSearchInd_surf.resize(feats_down_size);
             // Nearest_Points.resize(feats_down_size);
@@ -1312,16 +1324,19 @@ int main(int argc, char** argv)
             // double t_update_end = omp_get_wtime();
 
             /******* Publish odometry *******/
+            ROS_INFO("publish odometry");
             publish_odometry(pubOdomAftMapped);
             // publish_odometry(best.kf.get_x());
             publish_liko_se(pubLikoSE);
 
             /*** add the feature points to map kdtree ***/
+            ROS_INFO("add features");
             t3 = omp_get_wtime();
             map_incremental();
             t5 = omp_get_wtime();
             
             /******* Publish points *******/
+            ROS_INFO("publish points");
             if (path_en)                         publish_path(pubPath);
             if (scan_pub_en || pcd_save_en)      publish_frame_world(pubLaserCloudFull);
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
