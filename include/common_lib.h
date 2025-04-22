@@ -148,7 +148,7 @@ bool esti_normvector(Matrix<T, 3, 1> &normvec, const PointVector &point, const T
     b *= -1.0f;
 
     for (int j = 0; j < point_num; j++)
-    {
+    {   
         A(j,0) = point[j].x;
         A(j,1) = point[j].y;
         A(j,2) = point[j].z;
@@ -169,30 +169,42 @@ bool esti_normvector(Matrix<T, 3, 1> &normvec, const PointVector &point, const T
 
 float calc_dist(PointType p1, PointType p2);
 
-template<typename T>
-bool esti_plane(Matrix<T, 4, 1> &pca_result, const PointVector &point, const T &threshold)
-{
+template<typename T> bool esti_plane(Matrix<T, 4, 1> &pca_result, const PointVector &point, float threshold){
     Matrix<T, NUM_MATCH_POINTS, 3> A;
     Matrix<T, NUM_MATCH_POINTS, 1> b;
     A.setZero();
     b.setOnes();
     b *= -1.0f;
+    // ROS_INFO("esti_plane");
+    // std::cout << point.size();
+    if (point.size() < NUM_MATCH_POINTS) {
+        ROS_WARN("esti_plane: not enough neighbors! got %zu, require %d");
+        // pts_near.size(), NUM_MATCH_POINTS, i);;
+        // for (int j = pts_near.size(); j < NUM_MATCH_POINTS; ++j)
+        //     pts_near.push_back(pts_near.back());
+        return false;
+    }
 
     for (int j = 0; j < NUM_MATCH_POINTS; j++)
     {
+
+        // std::cout<<point[j].x;
+        // std::cout<<point[j].y;
+        // std::cout<<point[j].z;
+        // ROS_INFO("%d %d", j, NUM_MATCH_POINTS);
         A(j,0) = point[j].x;
         A(j,1) = point[j].y;
         A(j,2) = point[j].z;
     }
 
     Matrix<T, 3, 1> normvec = A.colPivHouseholderQr().solve(b);
-
+    // ROS_INFO("pca_result(0)");
     T n = normvec.norm();
     pca_result(0) = normvec(0) / n;
     pca_result(1) = normvec(1) / n;
     pca_result(2) = normvec(2) / n;
     pca_result(3) = 1.0 / n;
-
+    // ROS_INFO("pca_result(0) DONE");
     for (int j = 0; j < NUM_MATCH_POINTS; j++)
     {
         if (fabs(pca_result(0) * point[j].x + pca_result(1) * point[j].y + pca_result(2) * point[j].z + pca_result(3)) > threshold)

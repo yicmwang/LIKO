@@ -33,28 +33,12 @@
 #include <eigen_conversions/eigen_msg.h>
 #include <pcl_conversions/pcl_conversions.h>
 
-#include "common_lib.h"            // must define V3D, M3D, MD(), Zero3d, Eye3d, Pose6D, etc.
-#include "particle_filter.hpp"     // for state_ikfom, input_ikfom
+#include "common_lib.h"
 #include "so3_math.h"
-
-// …then your RBPFSLAM / Particle struct declarations…
-
-
-/*
-struct Particle {
-
-    esekfom::esekf<state_ikfom,15,input_ikfom> kf;
-    double weight = 1.0;
-    pcl::PointCloud<PointType>::Ptr map_cloud{new pcl::PointCloud<PointType>()};
-    ikd::KDTree<PointType> ikdtree;
-};
-
-*/
-
 
 
 struct Pose2D {
-  double x = 0, y = 0, yaw = 0;
+  double x = 0.0, y = 0.0, yaw = 0.0;
 };
 
 
@@ -64,31 +48,34 @@ struct Particle {
   pcl::PointCloud<PointType>::Ptr map_cloud;
   KD_TREE<PointType> ikdtree;
   double weight = 1.0;
+
+  Particle() = default; 
 };
 
 
 class RBPFSLAM {
 public:
     RBPFSLAM(int num_particles);
+
     void setExtrinsics(M3D Lidar_R, V3D Lidar_T);
 
     void imuPredict(const MeasureGroup &meas, const Eigen::Matrix3d &R_base_foot);
     void lidarUpdate(const MeasureGroup &meas, pcl::PointCloud<PointType>::Ptr down);
     const Particle& best() const;
-    std::vector<Particle> particles_;
 
 private:
     int num_particles_;
+    std::vector<Particle> particles_;
 
     imu_proc::ImuProcess imu_proc_;
     bool init_done_;
     int init_count_;
+
     M3D Lidar_R_wrt_IMU;
     V3D Lidar_T_wrt_IMU;
 
-    std::mt19937                      rng_{std::random_device{}()};
+    std::mt19937 rng_{std::random_device{}()};
     std::uniform_real_distribution<> uni_{0.0, 1.0};
-
 
 
     void normalizeWeights();

@@ -104,7 +104,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
    ** 2. normalize the acceleration measurenments to unit gravity **/
   
   V3D cur_acc, cur_gyr;
-  
+  ROS_INFO("IMU_init_1");
   if (b_first_frame_)
   {
     Reset();
@@ -116,7 +116,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
     mean_gyr << gyr_acc.x, gyr_acc.y, gyr_acc.z;
     first_lidar_time = meas.lidar_beg_time;
   }
-
+  ROS_INFO("IMU_init_2");
   for (const auto &imu : meas.imu)
   {
     const auto &imu_acc = imu->linear_acceleration;
@@ -134,6 +134,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
 
     N ++;
   }
+  ROS_INFO("IMU_init_3");
   state_ikfom init_state = kf_state.get_x();
   init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
   
@@ -141,6 +142,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
   init_state.bg  = mean_gyr;
   // init_state.offset_T_L_I = Lidar_T_wrt_IMU;
   // init_state.offset_R_L_I = Lidar_R_wrt_IMU;
+  ROS_INFO("IMU_init_4");
   kf_state.change_x(init_state);
 
   esekfom::esekf<state_ikfom, 15, input_ikfom>::cov init_P = kf_state.get_P();
@@ -150,13 +152,14 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
   // init_P(15,15) = init_P(16,16) = init_P(17,17) = 0.0001;
   // init_P(18,18) = init_P(19,19) = init_P(20,20) = 0.001;
   // init_P(21,21) = init_P(22,22) = 0.00001; 
-
+  ROS_INFO("IMU_init_5");
   init_P(9,9) = init_P(10,10) = init_P(11,11) = 0.0001;
   init_P(12,12) = init_P(13,13) = init_P(14,14) = 0.001;
   init_P(15,15) = init_P(16,16) = init_P(17,17) = 0.01;
   init_P(18,18) = init_P(19,19) = 0.00001;
   kf_state.change_P(init_P);
   last_imu_ = meas.imu.back();
+  ROS_INFO("IMU_init_6");
 }
 
 void ImuProcess::PredictImuState(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 15, input_ikfom> &kf_state, int num_ped_imu_meas, Eigen::Matrix3d & R_base_foot)
@@ -231,7 +234,9 @@ void ImuProcess::PredictImuState(const MeasureGroup &meas, esekfom::esekf<state_
 void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 15, input_ikfom> &kf_state, PointCloudXYZI &pcl_out, Eigen::Matrix3d R_base_foot)
 {
   /*** add the imu of the last frame-tail to the of current frame-head ***/
+  ROS_INFO("v_imu");
   auto v_imu = meas.imu;
+  ROS_INFO("push front");
   v_imu.push_front(last_imu_);
   const double &imu_beg_time = v_imu.front()->header.stamp.toSec();
   const double &imu_end_time = v_imu.back()->header.stamp.toSec();
@@ -239,12 +244,14 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
   const double &pcl_end_time = meas.lidar_end_time;
   
   /*** sort point clouds by offset time ***/
+  ROS_INFO("sort");
   pcl_out = *(meas.lidar);
   sort(pcl_out.points.begin(), pcl_out.points.end(), imu_proc::time_list);
   // /*** forward propagation at each imu point ***/
   V3D angvel_avr, acc_imu, vel_imu, pos_imu;
   M3D R_imu;
 
+  ROS_INFO("push_back imu pose");
   double dt = 0;
   for (auto it_imu = IMUposeTemp.begin(); it_imu < (IMUposeTemp.end()); it_imu++)
   {
@@ -253,7 +260,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
     IMUpose.push_back(set_pose6d(offs_t, head.acc_s_last_temp, head.angvel_last_temp, head.imu_vel_temp, head.imu_pos_temp, head.imu_rot_temp));
 
   }
-
+  ROS_INFO("prediction");
   /*** calculated the pos and attitude prediction at the frame-end ***/
   double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
   dt = note * (pcl_end_time - imu_end_time);
@@ -263,6 +270,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
   last_imu_ = meas.imu.back();
   last_lidar_end_time = pcl_end_time;
 
+  ROS_INFO("undistort");
   /*** undistort each lidar point (backward propagation) ***/
   if (pcl_out.points.begin() == pcl_out.points.end()) return;
   auto it_pcl = pcl_out.points.end() - 1;
@@ -305,13 +313,15 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
 {
   double t1,t2,t3;
   t1 = omp_get_wtime();
+  // std:cout << cur_pcl_un_;
 
   if(meas.imu.empty()) {return;};
   ROS_ASSERT(meas.lidar != nullptr);
-
+  ROS_WARN("assertion passed");
   if (imu_need_init_)
   {
     /// The very first lidar frame
+    ROS_WARN("IMU_init");
     IMU_init(meas, kf_state, init_iter_num);
 
     imu_need_init_ = true;
@@ -334,7 +344,10 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
     imu_inited = true;
     return;
   }
-
+  ROS_WARN("UndistortPcl");
+  // std::cout << cur_pcl_un_;
+  if (cur_pcl_un_ == NULL)
+    ROS_WARN("cur_pcl_un_ nullptr");
   UndistortPcl(meas, kf_state, *cur_pcl_un_, R_base_foot);
 
   t2 = omp_get_wtime();

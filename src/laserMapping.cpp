@@ -204,9 +204,10 @@ void SigHandle(int sig)
 }
 
 //
-inline pcl::PointCloud<PointType>::Ptr downsample(const pcl::PointCloud<PointType>::Ptr &in) {
+inline pcl::PointCloud<PointType>::Ptr downsample(pcl::PointCloud<PointType>::Ptr &in) {
+    
     static pcl::VoxelGrid<PointType> vg;
-    vg.setLeafSize(0.25, 0.25, 0.25);
+    vg.setLeafSize(0.1, 0.1, 0.1);
     auto out = boost::make_shared<pcl::PointCloud<PointType>>();
     vg.setInputCloud(in);
     vg.filter(*out);
@@ -447,6 +448,11 @@ void r_foot_force_cbk(const geometry_msgs::WrenchStamped::ConstPtr &msg)
 
 double lidar_mean_scantime = 0.0;
 int    scan_num = 0;
+
+void getPcl(MeasureGroup &meas, boost::shared_ptr<PointCloudXYZI> &out)
+{
+    out = (meas.lidar);
+}
 bool sync_packages(MeasureGroup &meas)
 {
     /*** push imu data, and pop from imu buffer ***/
@@ -455,7 +461,6 @@ bool sync_packages(MeasureGroup &meas)
         meas.imu.clear();
         can_clean_imu = false;
     }
-
     if (!imu_buffer.empty())
     {
         double imu_time = imu_buffer.front()->header.stamp.toSec();
@@ -472,11 +477,11 @@ bool sync_packages(MeasureGroup &meas)
     {
         new_imu_meas = false;
     }
-
     if (lidar_buffer.empty()) {
+        // ROS_INFO("lidar empty");
         return false;
     }
-
+    // ROS_INFO("lidar_buffer not empty");
     /*** push a lidar scan ***/
     if(!lidar_pushed)
     {
@@ -501,20 +506,18 @@ bool sync_packages(MeasureGroup &meas)
         meas.lidar_end_time = lidar_end_time;
 
         lidar_pushed = true;
+        // ROS_INFO("lidar pushed");
     }
-
     if (last_timestamp_imu < lidar_end_time)
     {
         return false;
     }
-    
     lidar_buffer.pop_front();
     time_buffer.pop_front();
     lidar_pushed = false;
     can_clean_imu = true;
     return true;
 }
-
 bool new_force_and_encoder(MeasureGroup &meas)
 {
     bool has_new_data = false;
@@ -1014,6 +1017,8 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     }
 }
 
+
+
 int main(int argc, char** argv)
 {
     ros::init(argc, argv, "laserMapping");
@@ -1156,19 +1161,33 @@ int main(int argc, char** argv)
             svd_time   = 0;
             t0 = omp_get_wtime();
 
+            
+
+            // p_imu->Process(Measures, kf, feats_undistort, R_base_foot); // 这里边就做完预测了。
+
             /*
-            p_imu->Process(Measures, kf, feats_undistort, R_base_foot); // 这里边就做完预测了。
             state_point = kf.get_x();
-            pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
+            pos_lid = state_point.pos + state_point.rot * Lidar_T_wrthttps://dl.acm.org/doi/10.1145/2330163.2330207_IMU;
             */
 
+
             // 1) propagate every particle’s EKF with IMU
+            ROS_WARN("imuPredict");
             rbpf.imuPredict(Measures, R_base_foot);
 
+
             // 2) down‑sample the (undistorted) point‑cloud
+            ROS_WARN("getPcl");
+            getPcl(Measures, feats_undistort);
+            ROS_WARN("downsample");
             auto down = downsample(feats_undistort);
 
+            publish_frame_body(pubLaserCloudFull_body);
+            std::cout << feats_undistort->points.size();
+
+
             // 3) update every particle’s map & weight with LiDAR
+            ROS_WARN("lidarUpdate");
             rbpf.lidarUpdate(Measures, down);
 
             // 4) pick the best particle, extract its EKF state
@@ -1205,6 +1224,9 @@ int main(int argc, char** argv)
                 ROS_WARN("No point, skip this scan!\n");
                 continue;
             }
+            else {
+                ROS_WARN("Success\n");
+            }
 
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;
@@ -1216,7 +1238,6 @@ int main(int argc, char** argv)
             downSizeFilterSurf.filter(*feats_down_body);
             t1 = omp_get_wtime();
             feats_down_size = feats_down_body->points.size();
-            
             /*** initialize the map kdtree ***/
             if(ikdtree.Root_Node == nullptr)
             {
@@ -1340,101 +1361,104 @@ int main(int argc, char** argv)
         }
         else if(new_imu_meas)
         {
+            // ROS_INFO("No LIDAR Data");
             if(num_predicted_imu_meas > Measures.imu.size())
             {
                 num_predicted_imu_meas = 0;
             }
-            p_imu->PredictImuState(Measures, kf, num_predicted_imu_meas, R_base_foot);
+            // ROS_INFO("PredictImuState?");
+            rbpf.imuPredict(Measures, R_base_foot);
+            // ROS_INFO("PredictImuState.");
             num_predicted_imu_meas = Measures.imu.size();
             state_point = kf.get_x();
         }
 
-        if(new_force_and_encoder(Measures) && !Measures.imu.empty())
-        {
-            if(Measures.l_f_force->wrench.force.z>150 && Measures.r_f_force->wrench.force.z>150)
-            {
-                contact = ContactPoint::BothFeet;
-            }
-            else
-            {
-                if(Measures.l_f_force->wrench.force.z > 250)
-                {
-                    contact = ContactPoint::LeftFoot;
-                }
-                else if(Measures.r_f_force->wrench.force.z > 250)
-                {
-                    contact = ContactPoint::RightFoot;
-                }
-                else
-                {
-                    contact = ContactPoint::NONE;
-                }
-            }
+        // if(new_force_and_encoder(Measures) && !Measures.imu.empty())
+        // {
+        //     if(Measures.l_f_force->wrench.force.z>150 && Measures.r_f_force->wrench.force.z>150)
+        //     {
+        //         contact = ContactPoint::BothFeet;
+        //     }
+        //     else
+        //     {
+        //         if(Measures.l_f_force->wrench.force.z > 250)
+        //         {
+        //             contact = ContactPoint::LeftFoot;
+        //         }
+        //         else if(Measures.r_f_force->wrench.force.z > 250)
+        //         {
+        //             contact = ContactPoint::RightFoot;
+        //         }
+        //         else
+        //         {
+        //             contact = ContactPoint::NONE;
+        //         }
+        //     }
             
-            // shimiit trigger
-            if(contact != prev_contact)
-            {
-              if(contact_change_num == 0)
-              {
-                next_contact = contact;
-                contact_change_num++;
-              }
-              else
-              {
-                if(contact == next_contact)
-                {
-                  contact_change_num++;
-                }
-                else
-                {
-                  contact_change_num=0;
-                }
-              }
-              if(contact_change_num > 2)
-              {
-                prev_contact = contact;
+        //     // shimiit trigger
+        //     if(contact != prev_contact)
+        //     {
+        //       if(contact_change_num == 0)
+        //       {
+        //         next_contact = contact;
+        //         contact_change_num++;
+        //       }
+        //       else
+        //       {
+        //         if(contact == next_contact)
+        //         {
+        //           contact_change_num++;
+        //         }
+        //         else
+        //         {
+        //           contact_change_num=0;
+        //         }
+        //       }
+        //       if(contact_change_num > 2)
+        //       {
+        //         prev_contact = contact;
 
-                // UpdateKinematicState(Measures, kf, prev_contact);
-                // UpdateContactPositionAftSwitch(prev_contact);
-                for (auto &p: rbpf.particles_) {
-                    UpdateKinematicState(Measures, p.kf, prev_contact);
-                    UpdateContactPositionAftSwitch(prev_contact, p.kf);
-                }
-              }
-            }    
-            else
-            {
-                for (auto &p: rbpf.particles_) {
-                    UpdateKinematicState(Measures, p.kf, prev_contact);
-                    UpdateContactPositionAftSwitch(prev_contact, p.kf);
-                }
-            }
+        //         // UpdateKinematicState(Measures, kf, prev_contact);
+        //         // UpdateContactPositionAftSwitch(prev_contact);
+        //         for (auto &p: rbpf.particles_) {
+        //             UpdateKinematicState(Measures, p.kf, prev_contact);
+        //             UpdateContactPositionAftSwitch(prev_contact, p.kf);
+        //         }
+        //       }
+        //     }    
+        //     else
+        //     {
+        //         for (auto &p: rbpf.particles_) {
+        //             UpdateKinematicState(Measures, p.kf, prev_contact);
+        //             UpdateContactPositionAftSwitch(prev_contact, p.kf);
+        //         }
+        //     }
 
-            if(p_imu->imu_inited)
-            {
-                v_meas = KinematicVelocityEstimation(Measures, prev_contact);
+        //     if(p_imu->imu_inited)
+        //     {
+        //         v_meas = KinematicVelocityEstimation(Measures, prev_contact);
                 
-                velocity_residual = v_meas - state_point.vel;
+        //         velocity_residual = v_meas - state_point.vel;
 
-                for (auto &p: rbpf.particles_) {
-                    UpdateBodyPositionKine(prev_contact, p.kf);
-                    UpdateContactPositionAftSwitch(prev_contact, p.kf);
-                }
+        //         for (auto &p: rbpf.particles_) {
+        //             UpdateBodyPositionKine(prev_contact, p.kf);
+        //             UpdateContactPositionAftSwitch(prev_contact, p.kf);
+        //         }
 
-                position_residual = body_position_kinematic - state_point.pos;
-                double solve_H_time = 0;
-                if(v_meas!=Eigen::Vector3d::Zero())
-                {
-                    lidar_update = false;
-                    for (auto &p: rbpf.particles_)
-                        p.kf.update_iterated_dyn_share_modified(kinematic_update_cov, solve_H_time, 1);
+        //         position_residual = body_position_kinematic - state_point.pos;
+        //         double solve_H_time = 0;
+        //         if(v_meas!=Eigen::Vector3d::Zero())
+        //         {
+        //             lidar_update = false;
+        //             for (auto &p: rbpf.particles_)
+        //                 p.kf.update_iterated_dyn_share_modified(kinematic_update_cov, solve_H_time, 1);
                     
-                    // ROS_INFO("published");
-                }   
-            }
+        //             // ROS_INFO("published");
+        //         }   
+        //     }
             
-            publish_liko_se(pubLikoSE);
-        }
+        //     publish_liko_se(pubLikoSE);
+        // }
 
         status = ros::ok();
         rate.sleep();
