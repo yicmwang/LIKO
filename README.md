@@ -64,6 +64,8 @@ To run the algorithm:
     roslaunch liko mapping_$your_lidar_type$.launch
 ```
 
-To use the accompanied dataset, first download 
+To use the accompanied dataset, first download the accompanied dataset, then:
 ```
+    rosbag play /$dataset folder$/<dataset>.bag
 ```
+The lidar type for this dataset is velodyne, and mapping_velodyne.launch should be used.
