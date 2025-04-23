@@ -1,7 +1,7 @@
-# LIKO
-A LiDAR-Inertial-Kinematic Odometry (LIKO) for biped robot state estimation. 
+# P-LIKO
+A RBPF Based Modification based on the LiDAR-Inertial-Kinematic Odometry (LIKO) for biped robot state estimation. 
 
-Paper: [LIKO: LiDAR, Inertial, and Kinematic Odometry for Bipedal Robots](https://arxiv.org/abs/2404.18047)
+Paper for EKF basis: [LIKO: LiDAR, Inertial, and Kinematic Odometry for Bipedal Robots](https://arxiv.org/abs/2404.18047)
 
 The code implementation is based on [FAST_LIO](https://github.com/hku-mars/FAST_LIO).
 
@@ -18,14 +18,11 @@ Topic structure:
 /vicon/bhr_b3         : geometry_msgs/TransformStamped # VICON groundtruth
 ```
 
-## System Overview
-![system-overview](https://github.com/Mr-Zqr/LIKO/assets/62141613/60168789-2b43-41d6-88af-e759f3476c0f)
-
 ## 1. Prerequisites
 ### 1.1 **Ubuntu** and **ROS**
-**Ubuntu >= 16.04**
+**Ubuntu = 18.04**
 
-For **Ubuntu 18.04 or higher**, the **default** PCL and Eigen is enough for FAST-LIO to work normally.
+The Default PCL and Eigen is enough for FAST-LIO to work normally.
 
 ROS    >= Melodic. [ROS Installation](http://wiki.ros.org/ROS/Installation)
 
