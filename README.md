@@ -39,7 +39,7 @@ Clone the repository and catkin_make:
 
 ```
     cd ~/$A_ROS_DIR$/src
-    git clone https://github.com/Mr-Zqr/LIKO.git
+    git clone https://github.com/yicmwang/LIKO.git
     cd LIKO
     git submodule update --init
     cd ../..
