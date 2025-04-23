@@ -546,7 +546,6 @@ void map_incremental()
     PointNoNeedDownsample.reserve(feats_down_size);
     for (int i = 0; i < feats_down_size; i++)
     {
-        ROS_INFO("map incre iter %d", i);
         /* transform to world frame */
         pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
         /* decide if need add to map */
@@ -584,11 +583,10 @@ void map_incremental()
 
     double st_time = omp_get_wtime();
     add_point_size = ikdtree.Add_Points(PointToAdd, true);
-    ROS_INFO("ikdtree.Add_Points");
     ikdtree.Add_Points(PointNoNeedDownsample, false); 
     add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
     kdtree_incremental_time = omp_get_wtime() - st_time;
-    ROS_INFO("Done.");
+
 }
 
 PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI(500000, 1));
@@ -1201,6 +1199,10 @@ int main(int argc, char** argv)
 
             // 4) pick the best particle, extract its EKF state
 
+            // update IKDtree
+            ROS_WARN("update IKDtree");
+            // rbpf.update_ikdtree(ikdtree);
+
 
             const auto &best = rbpf.best();
 
@@ -1271,14 +1273,14 @@ int main(int argc, char** argv)
             // cout<<"[ mapping ]: In num: "<<feats_undistort->points.size()<<" downsamp "<<feats_down_size<<" Map num: "<<featsFromMapNum<<"effect num:"<<effct_feat_num<<endl;
 
             /*** ICP and iterated Kalman filter update ***/ //??
-            // if (feats_down_size < 5)
-            // {
-            //     ROS_WARN("No point, skip this scan!\n");
-            //     continue;
-            // }
+            if (feats_down_size < 5)
+            {
+                ROS_WARN("No point, skip this scan!\n");
+                continue;
+            }
             
-            // normvec->resize(feats_down_size);
-            // feats_down_world->resize(feats_down_size);
+            normvec->resize(feats_down_size);
+            feats_down_world->resize(feats_down_size);
 
             // V3D ext_euler = SO3ToEuler(Lidar_R_wrt_IMU);
             // fout_pre<<setw(20)<<Measures.lidar_beg_time - first_lidar_time<<" "<<euler_cur.transpose()<<" "<< state_point.pos.transpose()<<" "<<ext_euler.transpose() << " "<<Lidar_T_wrt_IMU.transpose()<< " " << state_point.vel.transpose() \
@@ -1293,7 +1295,7 @@ int main(int argc, char** argv)
             // }
 
             // pointSearchInd_surf.resize(feats_down_size);
-            // Nearest_Points.resize(feats_down_size);
+            Nearest_Points.resize(feats_down_size);
             // int  rematch_num = 0;
             // bool nearest_search_en = true; //
 
@@ -1373,6 +1375,7 @@ int main(int argc, char** argv)
             //     dump_lio_state_to_log(fp);
             // }
             Measures.imu.clear();
+            ROS_INFO("Measures.imu.clear() done");
         }
         else if(new_imu_meas)
         {

@@ -63,6 +63,7 @@ public:
     void lidarUpdate(const MeasureGroup &meas, pcl::PointCloud<PointType>::Ptr down);
     const Particle& best() const;
     void init_dyn(esekfom::esekf<state_ikfom, 15, input_ikfom> kf);
+    // void update_ikdtree(KD_TREE<PointType> ikdtree);
 
 private:
     double solvetime = 0;

@@ -83,6 +83,11 @@ void RBPFSLAM::imuPredict(const MeasureGroup &meas, const Eigen::Matrix3d &R_bas
     }
 }
 
+// void RBPFSLAM::update_ikdtree(KD_TREE<PointType> ikdtree){
+//     for (auto &p : particles_) {
+//         p.ikdtree = ikdtree;
+//     }
+// }
 
 // Lidar Update
 void RBPFSLAM::lidarUpdate(const MeasureGroup &meas,
@@ -99,7 +104,6 @@ void RBPFSLAM::lidarUpdate(const MeasureGroup &meas,
 
     Eigen::MatrixXd H; Eigen::VectorXd h;
 
-    ROS_INFO("for");
     for (auto &p : particles_) {
         // (1) slam pose → EKF state
         auto s = p.kf.get_x();
@@ -110,7 +114,7 @@ void RBPFSLAM::lidarUpdate(const MeasureGroup &meas,
                                         Eigen::Vector3d::UnitZ())
                     };
         p.kf.change_x(s);
-
+        
         pcl::PointCloud<PointType>::Ptr world_scan(new pcl::PointCloud<PointType>);
         world_scan->reserve(down->size());
 
@@ -125,13 +129,16 @@ void RBPFSLAM::lidarUpdate(const MeasureGroup &meas,
             world_scan->push_back(w);
         }
 
+        ROS_INFO("what ever");
         if (!p.map_cloud) {
             p.map_cloud = world_scan;
             p.ikdtree.Build(p.map_cloud->points);
-        } else {
+        }
+        else {
             p.map_cloud->points.insert(p.map_cloud->points.end(),
                                        world_scan->points.begin(),
                                        world_scan->points.end());
+            ROS_INFO("add_points, world scan size %d", world_scan->points.size());
             p.ikdtree.Add_Points(world_scan->points, /*rebuild=*/false);
         }
 
@@ -304,6 +311,8 @@ double RBPFSLAM::computePointPlaneResidual(
     }
   return sum_sq;
 }
+
+
 
 // void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 15, input_ikfom> &kf_state, PointCloudXYZI &pcl_out, Eigen::Matrix3d R_base_foot)
 // {

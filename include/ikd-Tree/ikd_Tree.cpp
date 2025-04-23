@@ -478,7 +478,9 @@ template <typename PointType>
 int KD_TREE<PointType>::Add_Points(PointVector &PointToAdd, bool downsample_on)
 {
     int NewPointSize = PointToAdd.size();
+    printf("1#");
     int tree_size = size();
+    printf("2#");
     BoxPointType Box_of_Point;
     PointType downsample_result, mid_point;
     bool downsample_switch = downsample_on && DOWNSAMPLE_SWITCH;
