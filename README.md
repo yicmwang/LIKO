@@ -63,3 +63,7 @@ To run the algorithm:
     source devel/setup.bash
     roslaunch liko mapping_$your_lidar_type$.launch
 ```
+
+To use the accompanied dataset, first download 
+```
+```
